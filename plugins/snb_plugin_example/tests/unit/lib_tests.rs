@@ -37,7 +37,7 @@ fn preserves_raw_html_rich_text() {
 fn converts_markdown_syntax_to_html() {
     assert_eq!(
         convert_rich_text("hello *world*!"),
-        ("hello <b>world</b>!".to_string(), Some(TextFormat::Html))
+        ("hello <i>world</i>!".to_string(), Some(TextFormat::Html))
     );
     assert_eq!(
         convert_rich_text("hello **world**!"),
@@ -60,44 +60,72 @@ fn converts_markdown_syntax_to_html() {
         ("<blockquote>quote line</blockquote>".to_string(), Some(TextFormat::Html))
     );
     assert_eq!(
-        convert_rich_text("*粗体* _斜体_ ~删除线~ ||剧透|| `等宽代码` > 引用文本"),
-        (
-            "<b>粗体</b> <i>斜体</i> <s>删除线</s> <tg-spoiler>剧透</tg-spoiler> <code>等宽代码</code>\n<blockquote>引用文本</blockquote>".to_string(),
-            Some(TextFormat::Html)
-        )
-    );
-    assert_eq!(
         convert_rich_text("> line 1\n> line 2"),
         ("<blockquote>line 1\nline 2</blockquote>".to_string(), Some(TextFormat::Html))
-    );
-    assert_eq!(
-        convert_rich_text("**> expandable quote"),
-        ("<blockquote expandable>expandable quote</blockquote>".to_string(), Some(TextFormat::Html))
-    );
-    assert_eq!(
-        convert_rich_text("*粗体* _斜体_ ~删除线~ <tg-spoiler>剧透</tg-spoiler> <code>等宽代码</code> > 引用文本"),
-        (
-            "<b>粗体</b> <i>斜体</i> <s>删除线</s> <tg-spoiler>剧透</tg-spoiler> <code>等宽代码</code>\n<blockquote>引用文本</blockquote>".to_string(),
-            Some(TextFormat::Html)
-        )
-    );
-    assert_eq!(
-        convert_rich_text("*粗体* _斜体_ ~删除线~ <tg-spoiler>剧透</tg-spoiler> <code>等宽代码</code>\n> 第一行引用"),
-        (
-            "<b>粗体</b> <i>斜体</i> <s>删除线</s> <tg-spoiler>剧透</tg-spoiler> <code>等宽代码</code>\n<blockquote>第一行引用</blockquote>".to_string(),
-            Some(TextFormat::Html)
-        )
     );
     assert_eq!(
         convert_rich_text("### 标题测试"),
         ("<h3>标题测试</h3>".to_string(), Some(TextFormat::Html))
     );
-    let (table_html, fmt) = convert_rich_text("| 标题1 | 标题2 |\n|---|---|\n| A | B |");
+    assert_eq!(
+        convert_rich_text("| 标题1 | 标题2 |\n|---|---|\n| A | B |"),
+        (
+            "<table><tr><th>标题1</th><th>标题2</th></tr><tr><td>A</td><td>B</td></tr></table>".to_string(),
+            Some(TextFormat::Html)
+        )
+    );
+}
+
+#[test]
+fn converts_full_miuix_readme() {
+    let readme = r#"## Miuix
+
+A UI library for Compose Multiplatform.
+
+> This library is experimental. APIs may change without notice.
+
+[![Kotlin](https://img.shields.io/badge/kotlin-2.4.21-7F52FF)](https://kotlinlang.org/)
+
+### Supported Platforms
+
+![Android](https://img.shields.io/badge/Android-3DDC84?logo=android&logoColor=white)
+
+### Modules
+
+|Module|Description|
+|---|---|
+|`miuix-ui`|Core UI component library|
+|`miuix-preference`|Preference components library, depends on `miuix-ui`|
+
+### Getting Started
+
+```diff
+kotlin {
+    sourceSets {
+        commonMain.dependencies {
+            implementation("top.yukonga.miuix.kmp:miuix-ui:<version>")
+        }
+    }
+}
+```
+
+### Screenshots
+
+<table>
+  <tr>
+    <td><a href="https://example.com/001.webp"><img src="https://example.com/001.webp" width="300" alt="001"/></a></td>
+  </tr>
+</table>
+"#;
+    let (html, fmt) = convert_rich_text(readme);
     assert_eq!(fmt, Some(TextFormat::Html));
-    assert!(table_html.starts_with("<pre>+-"));
-    assert!(table_html.contains("标题1"));
-    assert!(table_html.contains("A"));
-    assert!(table_html.ends_with("-+</pre>"));
+    assert!(html.contains("<h2>Miuix</h2>"));
+    assert!(html.contains("<blockquote>"));
+    assert!(html.contains("<h3>Supported Platforms</h3>"));
+    assert!(html.contains("<table><tr><th>Module</th><th>Description</th></tr>"));
+    assert!(html.contains("<pre><code class=\"language-diff\">"));
+    assert!(html.contains("implementation"));
+    assert!(html.contains("https://example.com/001.webp"));
 }
 
 #[test]

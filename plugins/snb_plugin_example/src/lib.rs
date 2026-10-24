@@ -38,67 +38,6 @@ fn reply(src: &Event, text: impl Into<String>) -> Event {
     reply_formatted(src, text, None)
 }
 
-fn is_html_markup(text: &str) -> bool {
-    const HTML_TAGS: &[&str] = &[
-        "<b>", "</b>", "<strong>", "</strong>",
-        "<i>", "</i>", "<em>", "</em>",
-        "<u>", "</u>", "<ins>", "</ins>",
-        "<s>", "</s>", "<strike>", "</strike>", "<del>", "</del>",
-        "<code>", "</code>",
-        "<pre>", "</pre>",
-        "<blockquote>", "</blockquote>",
-        "<tg-spoiler>", "</tg-spoiler>",
-        "<tg-emoji", "</tg-emoji>",
-        "<a href=", "</a>",
-        "<h1>", "</h1>", "<h2>", "</h2>", "<h3>", "</h3>",
-        "<h4>", "</h4>", "<h5>", "</h5>", "<h6>", "</h6>",
-        "<table>", "</table>", "<tr>", "</tr>", "<td>", "</td>", "<th>", "</th>",
-        "<details", "</details>", "<summary>", "</summary>",
-        "<tg-math>", "</tg-math>", "<tg-math-block>", "</tg-math-block>",
-    ];
-    HTML_TAGS.iter().any(|tag| text.contains(tag))
-}
-
-fn is_markdown_markup(text: &str) -> bool {
-    if text.contains("```") || (text.contains('`') && text.chars().filter(|&c| c == '`').count() >= 2) {
-        return true;
-    }
-    if text.contains("||") && text.matches("||").count() >= 2 {
-        return true;
-    }
-    if text.contains("$$") {
-        return true;
-    }
-    if text.contains('|') && (text.contains("|-") || text.contains("-|") || text.contains("|:")) {
-        return true;
-    }
-    if text.lines().any(|l| {
-        let t = l.trim_start();
-        t.starts_with('>')
-            || t.starts_with("**>")
-            || t.starts_with("# ")
-            || t.starts_with("## ")
-            || t.starts_with("### ")
-            || t.starts_with("#### ")
-            || t.starts_with("##### ")
-            || t.starts_with("###### ")
-    }) {
-        return true;
-    }
-    if let (Some(bracket), Some(paren)) = (text.find('['), text.find("](")) {
-        if paren > bracket && text[paren..].contains(')') {
-            return true;
-        }
-    }
-    for delimiter in ['*', '_', '~'] {
-        let count = text.chars().filter(|&c| c == delimiter).count();
-        if count >= 2 {
-            return true;
-        }
-    }
-    false
-}
-
 fn escape_html_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -126,372 +65,261 @@ fn escape_attr_str(s: &str) -> String {
     out
 }
 
-fn replace_delimited(text: &str, delim: &str, open: &str, close: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find(delim) {
-        out.push_str(&rest[..start]);
-        let after_start = &rest[start + delim.len()..];
-        if let Some(end) = after_start.find(delim) {
-            let inner = &after_start[..end];
-            if !inner.is_empty() && !inner.starts_with(' ') && !inner.ends_with(' ') {
-                out.push_str(open);
-                out.push_str(inner);
-                out.push_str(close);
-                rest = &after_start[end + delim.len()..];
-            } else {
-                out.push_str(delim);
-                rest = after_start;
-            }
-        } else {
-            out.push_str(delim);
-            rest = after_start;
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-fn replace_links(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(bracket_open) = rest.find('[') {
-        out.push_str(&rest[..bracket_open]);
-        let after_bracket = &rest[bracket_open + 1..];
-        if let Some(bracket_close) = after_bracket.find("](") {
-            let link_text = &after_bracket[..bracket_close];
-            let after_paren = &after_bracket[bracket_close + 2..];
-            if let Some(paren_close) = after_paren.find(')') {
-                let url = &after_paren[..paren_close];
-                if !url.is_empty()
-                    && (url.starts_with("http://")
-                        || url.starts_with("https://")
-                        || url.starts_with("tg://"))
-                {
-                    out.push_str(&format!(
-                        "<a href=\"{}\">{}</a>",
-                        escape_attr_str(url),
-                        link_text
-                    ));
-                    rest = &after_paren[paren_close + 1..];
-                    continue;
-                }
-            }
-        }
-        out.push('[');
-        rest = after_bracket;
-    }
-    out.push_str(rest);
-    out
-}
-
-fn replace_blockquotes(text: &str) -> String {
-    let mut lines = Vec::new();
-    let mut in_quote = false;
-    let mut is_expandable = false;
-    let mut quote_lines = Vec::new();
-
-    let flush_quote = |lines: &mut Vec<String>, quote_lines: &mut Vec<String>, expandable: bool| {
-        if quote_lines.is_empty() {
-            return;
-        }
-        let open_tag = if expandable { "<blockquote expandable>" } else { "<blockquote>" };
-        lines.push(format!("{open_tag}{}</blockquote>", quote_lines.join("\n")));
-        quote_lines.clear();
-    };
-
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        let (stripped, expandable) = if let Some(s) = trimmed.strip_prefix("**&gt; ").or_else(|| trimmed.strip_prefix("**> ")) {
-            (Some(s), true)
-        } else if let Some(s) = trimmed.strip_prefix("&gt; ").or_else(|| trimmed.strip_prefix("> ")) {
-            (Some(s), false)
-        } else if let Some(s) = trimmed.strip_prefix("&gt;").or_else(|| trimmed.strip_prefix(">")) {
-            (Some(s), false)
-        } else if let Some(s) = trimmed.strip_prefix("＞ ").or_else(|| trimmed.strip_prefix("＞")).or_else(|| trimmed.strip_prefix("》 ")) {
-            (Some(s), false)
-        } else {
-            (None, false)
-        };
-
-        if let Some(s) = stripped {
-            if in_quote && is_expandable != expandable {
-                flush_quote(&mut lines, &mut quote_lines, is_expandable);
-            }
-            in_quote = true;
-            is_expandable = expandable;
-            quote_lines.push(s.to_string());
-            continue;
-        }
-
-        // Check if there is an inline quote marker mid-line: " &gt; ", " > ", " **&gt; ", " **> "
-        let (inline_pos, gt_len, inline_expandable) = if let Some(pos) = line.find(" **&gt; ").or_else(|| line.find(" **> ")) {
-            let len = if line[pos..].starts_with(" **&gt; ") { 8 } else { 5 };
-            (Some(pos), len, true)
-        } else if let Some(pos) = line.find(" &gt; ").or_else(|| line.find(" > ")) {
-            let len = if line[pos..].starts_with(" &gt; ") { 6 } else { 3 };
-            (Some(pos), len, false)
-        } else if let Some(pos) = line.find(" ＞ ").or_else(|| line.find(" ＞")).or_else(|| line.find(" 》 ")) {
-            let len = if line[pos..].starts_with(" ＞ ") || line[pos..].starts_with(" 》 ") { 4 } else { 3 };
-            (Some(pos), len, false)
-        } else {
-            (None, 0, false)
-        };
-
-        if let Some(pos) = inline_pos {
-            flush_quote(&mut lines, &mut quote_lines, is_expandable);
-            in_quote = false;
-
-            let before = &line[..pos];
-            let quote_part = &line[pos + gt_len..];
-            let open_tag = if inline_expandable { "<blockquote expandable>" } else { "<blockquote>" };
-            lines.push(format!("{before}\n{open_tag}{quote_part}</blockquote>"));
-            continue;
-        }
-
-        flush_quote(&mut lines, &mut quote_lines, is_expandable);
-        in_quote = false;
-        lines.push(line.to_string());
-    }
-
-    flush_quote(&mut lines, &mut quote_lines, is_expandable);
-    lines.join("\n")
-}
-
-fn char_display_width(s: &str) -> usize {
-    s.chars().map(|c| if (c as u32) > 255 { 2 } else { 1 }).sum()
-}
-
-fn replace_headings_and_tables(text: &str) -> String {
-    let mut out_lines = Vec::new();
-    let mut table_lines: Vec<&str> = Vec::new();
-    let mut in_table = false;
-
-    let flush_table = |out_lines: &mut Vec<String>, table_lines: &mut Vec<&str>| {
-        if table_lines.is_empty() {
-            return;
-        }
-        let mut rows: Vec<Vec<&str>> = Vec::new();
-
-        for raw_line in table_lines.iter() {
-            let line = raw_line.trim();
-            if !line.contains('|') {
-                continue;
-            }
-            let mut content = line;
-            if content.starts_with('|') {
-                content = &content[1..];
-            }
-            if content.ends_with('|') {
-                content = &content[..content.len() - 1];
-            }
-            let cells: Vec<&str> = content.split('|').map(str::trim).collect();
-
-            let is_sep = cells.iter().all(|c| {
-                !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' ')
-            });
-            if is_sep {
-                continue;
-            }
-            rows.push(cells);
-        }
-
-        if !rows.is_empty() {
-            let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
-            let mut col_widths = vec![0usize; num_cols];
-
-            for r in &rows {
-                for (i, cell) in r.iter().enumerate() {
-                    let w = char_display_width(cell);
-                    if w > col_widths[i] {
-                        col_widths[i] = w;
-                    }
-                }
-            }
-
-            let mut out = Vec::new();
-            let sep_cols: Vec<String> = col_widths.iter().map(|w| "-".repeat(*w)).collect();
-            let sep = format!("+-{}-+", sep_cols.join("-+-"));
-            out.push(sep.clone());
-
-            for (r_idx, r) in rows.iter().enumerate() {
-                let mut row_str = String::from("| ");
-                for i in 0..num_cols {
-                    let cell = r.get(i).copied().unwrap_or("");
-                    let w = char_display_width(cell);
-                    let pad = col_widths[i].saturating_sub(w);
-                    row_str.push_str(cell);
-                    row_str.push_str(&" ".repeat(pad));
-                    if i == num_cols - 1 {
-                        row_str.push_str(" |");
-                    } else {
-                        row_str.push_str(" | ");
-                    }
-                }
-                out.push(row_str);
-                if r_idx == 0 && rows.len() > 1 {
-                    out.push(sep.clone());
-                }
-            }
-            out.push(sep);
-            out_lines.push(format!("<pre>{}</pre>", out.join("\n")));
-        }
-        table_lines.clear();
-    };
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('|') && trimmed.contains('|') {
-            in_table = true;
-            table_lines.push(line);
-            continue;
-        } else if in_table {
-            flush_table(&mut out_lines, &mut table_lines);
-            in_table = false;
-        }
-
-        // Check headings # ... ###### (produce native <h1> to <h6>)
-        let mut heading_handled = false;
-        for level in (1..=6).rev() {
-            let prefix = "#".repeat(level) + " ";
-            if let Some(title) = trimmed.strip_prefix(&prefix) {
-                out_lines.push(format!("<h{level}>{}</h{level}>", title.trim()));
-                heading_handled = true;
-                break;
-            }
-        }
-
-        if !heading_handled {
-            out_lines.push(line.to_string());
-        }
-    }
-
-    if in_table {
-        flush_table(&mut out_lines, &mut table_lines);
-    }
-
-    out_lines.join("\n")
-}
-
-
-fn is_valid_telegram_html_tag(tag: &str) -> bool {
-    let lower = tag.to_ascii_lowercase();
-    const VALID_EXACT: &[&str] = &[
-        "<b>", "</b>", "<strong>", "</strong>",
-        "<i>", "</i>", "<em>", "</em>",
-        "<u>", "</u>", "<ins>", "</ins>",
-        "<s>", "</s>", "<strike>", "</strike>", "<del>", "</del>",
-        "<code>", "</code>",
-        "<pre>", "</pre>",
-        "<blockquote>", "</blockquote>", "<blockquote expandable>",
-        "<tg-spoiler>", "</tg-spoiler>",
-        "</tg-emoji>", "</a>",
-        "<h1>", "</h1>", "<h2>", "</h2>", "<h3>", "</h3>",
-        "<h4>", "</h4>", "<h5>", "</h5>", "<h6>", "</h6>",
-        "<table>", "</table>", "<tr>", "</tr>", "<td>", "</td>", "<th>", "</th>",
-        "<details>", "</details>", "<details open>",
-        "<summary>", "</summary>",
-        "<tg-math>", "</tg-math>", "<tg-math-block>", "</tg-math-block>",
-    ];
-    if VALID_EXACT.contains(&lower.as_str()) {
-        return true;
-    }
-    if (lower.starts_with("<a href=") && lower.ends_with('>'))
-        || (lower.starts_with("<tg-emoji") && lower.ends_with('>'))
-        || (lower.starts_with("<pre") && lower.ends_with('>'))
-        || (lower.starts_with("<code") && lower.ends_with('>'))
-        || (lower.starts_with("<blockquote") && lower.ends_with('>'))
-        || (lower.starts_with("<table") && lower.ends_with('>'))
-        || (lower.starts_with("<details") && lower.ends_with('>'))
-    {
-        return true;
-    }
-    false
-}
-fn process_markdown_delimiters(text: &str) -> String {
-    let mut out = text.to_string();
-    out = replace_links(&out);
-    out = replace_delimited(&out, "||", "<tg-spoiler>", "</tg-spoiler>");
-    out = replace_delimited(&out, "**", "<b>", "</b>");
-    out = replace_delimited(&out, "__", "<u>", "</u>");
-    out = replace_delimited(&out, "~~", "<s>", "</s>");
-    out = replace_delimited(&out, "*", "<b>", "</b>");
-    out = replace_delimited(&out, "_", "<i>", "</i>");
-    out = replace_delimited(&out, "~", "<s>", "</s>");
-    out
-}
-
-fn convert_markdown_segments(input: &str) -> String {
+fn preprocess_spoilers(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
-    let parts: Vec<&str> = input.split('`').collect();
-
-    for (i, part) in parts.iter().enumerate() {
-        if i % 2 == 1 {
-            out.push_str(&format!("<code>{}</code>", escape_html_str(part)));
-        } else {
-            out.push_str(&process_markdown_delimiters(part));
+    let mut rest = input;
+    while let Some(start) = rest.find("||") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        if let Some(end) = after.find("||") {
+            let spoiler = &after[..end];
+            if !spoiler.is_empty() {
+                out.push_str("<tg-spoiler>");
+                out.push_str(spoiler);
+                out.push_str("</tg-spoiler>");
+                rest = &after[end + 2..];
+                continue;
+            }
         }
+        out.push_str("||");
+        rest = after;
     }
+    out.push_str(rest);
     out
 }
 
-/// Detect and convert rich text format (HTML or Markdown) to HTML.
-pub(crate) fn convert_rich_text(input: &str) -> (String, Option<TextFormat>) {
-    let has_html = is_html_markup(input);
-    let has_md = is_markdown_markup(input);
-
-    if !has_html && !has_md {
-        return (input.to_string(), None);
+fn render_table_html(rows: &[(bool, Vec<String>)], out: &mut String) {
+    if rows.is_empty() {
+        return;
     }
+    out.push_str("<table>");
+    for (is_head, cells) in rows {
+        out.push_str("<tr>");
+        let tag = if *is_head { "th" } else { "td" };
+        for cell in cells {
+            out.push_str(&format!("<{tag}>{cell}</{tag}>"));
+        }
+        out.push_str("</tr>");
+    }
+    out.push_str("</table>");
+}
 
-    let mut tokens = Vec::new();
-    let mut i = 0;
-    let mut text_start = 0;
-    let bytes = input.as_bytes();
+pub(crate) fn convert_rich_text(input: &str) -> (String, Option<TextFormat>) {
+    use pulldown_cmark::{Event as MdEvent, Options, Parser, Tag, TagEnd};
 
-    while i < bytes.len() {
-        if bytes[i] == b'<' {
-            if let Some(close_pos) = input[i..].find('>') {
-                let candidate = &input[i..=i + close_pos];
-                if is_valid_telegram_html_tag(candidate) {
-                    if i > text_start {
-                        tokens.push((&input[text_start..i], false));
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+
+    let preprocessed = preprocess_spoilers(input);
+    let parser = Parser::new_ext(&preprocessed, options);
+    let mut out = String::with_capacity(input.len() + 64);
+    let mut table_cells: Vec<String> = Vec::new();
+    let mut table_rows: Vec<(bool, Vec<String>)> = Vec::new();
+    let mut in_cell = false;
+    let mut current_cell = String::new();
+    let mut in_link = false;
+    let mut has_formatting = false;
+
+    for event in parser {
+        match event {
+            MdEvent::Start(tag) => match tag {
+                Tag::Paragraph => {},
+                Tag::Heading { level, .. } => {
+                    has_formatting = true;
+                    out.push_str(&format!("<h{}>", level as u8));
+                }
+                Tag::BlockQuote(_) => {
+                    has_formatting = true;
+                    out.push_str("<blockquote>");
+                }
+                Tag::CodeBlock(kind) => {
+                    has_formatting = true;
+                    match kind {
+                        pulldown_cmark::CodeBlockKind::Fenced(lang) if !lang.is_empty() => {
+                            let clean_lang = lang.split_whitespace().next().unwrap_or("");
+                            out.push_str(&format!("<pre><code class=\"language-{}\">", escape_attr_str(clean_lang)));
+                        }
+                        _ => out.push_str("<pre><code>"),
                     }
-                    tokens.push((candidate, true));
-                    i += close_pos + 1;
-                    text_start = i;
-                    continue;
+                }
+                Tag::List(Some(start)) => {
+                    has_formatting = true;
+                    out.push_str(&format!("<ol start=\"{start}\">"));
+                }
+                Tag::List(None) => {
+                    has_formatting = true;
+                    out.push_str("<ul>");
+                }
+                Tag::Item => {
+                    has_formatting = true;
+                    out.push_str("<li>");
+                }
+                Tag::Strong => {
+                    has_formatting = true;
+                    out.push_str("<b>");
+                }
+                Tag::Emphasis => {
+                    has_formatting = true;
+                    out.push_str("<i>");
+                }
+                Tag::Strikethrough => {
+                    has_formatting = true;
+                    out.push_str("<s>");
+                }
+                Tag::Link { dest_url, .. } => {
+                    has_formatting = true;
+                    in_link = true;
+                    out.push_str(&format!("<a href=\"{}\">", escape_attr_str(&dest_url)));
+                }
+                Tag::Image { dest_url, .. } => {
+                    if !in_link {
+                        has_formatting = true;
+                        out.push_str(&format!("<a href=\"{}\">", escape_attr_str(&dest_url)));
+                    }
+                }
+                Tag::Table(_) => {
+                    has_formatting = true;
+                    table_rows.clear();
+                }
+                Tag::TableHead => {
+                    table_cells.clear();
+                }
+                Tag::TableRow => {
+                    table_cells.clear();
+                }
+                Tag::TableCell => {
+                    in_cell = true;
+                    current_cell.clear();
+                }
+                _ => {}
+            },
+            MdEvent::End(tag_end) => match tag_end {
+                TagEnd::Paragraph => {
+                    out.push_str("\n\n");
+                }
+                TagEnd::Heading(level) => {
+                    out.push_str(&format!("</h{}>\n\n", level as u8));
+                }
+                TagEnd::BlockQuote(_) => {
+                    while out.ends_with('\n') {
+                        out.pop();
+                    }
+                    out.push_str("</blockquote>\n\n");
+                }
+                TagEnd::CodeBlock => {
+                    out.push_str("</code></pre>\n\n");
+                }
+                TagEnd::List(true) => {
+                    out.push_str("</ol>\n\n");
+                }
+                TagEnd::List(false) => {
+                    out.push_str("</ul>\n\n");
+                }
+                TagEnd::Item => {
+                    out.push_str("</li>\n");
+                }
+                TagEnd::Strong => out.push_str("</b>"),
+                TagEnd::Emphasis => out.push_str("</i>"),
+                TagEnd::Strikethrough => out.push_str("</s>"),
+                TagEnd::Link => {
+                    in_link = false;
+                    out.push_str("</a>");
+                }
+                TagEnd::Image => {
+                    if !in_link {
+                        out.push_str("</a>");
+                    }
+                }
+                TagEnd::TableCell => {
+                    in_cell = false;
+                    table_cells.push(current_cell.clone());
+                }
+                TagEnd::TableHead => {
+                    table_rows.push((true, table_cells.clone()));
+                }
+                TagEnd::TableRow => {
+                    table_rows.push((false, table_cells.clone()));
+                }
+                TagEnd::Table => {
+                    render_table_html(&table_rows, &mut out);
+                    out.push_str("\n\n");
+                }
+                _ => {}
+            },
+            MdEvent::Text(text) => {
+                let escaped = escape_html_str(&text);
+                if in_cell {
+                    current_cell.push_str(&escaped);
+                } else {
+                    out.push_str(&escaped);
                 }
             }
-        }
-        i += 1;
-    }
-    if text_start < input.len() {
-        tokens.push((&input[text_start..], false));
-    }
-
-    let mut assembled = String::with_capacity(input.len() + 32);
-    let mut in_code = false;
-
-    for (val, is_tag) in tokens {
-        if is_tag {
-            let lower = val.to_ascii_lowercase();
-            if lower.starts_with("<pre") || lower.starts_with("<code") {
-                in_code = true;
-            } else if lower.starts_with("</pre") || lower.starts_with("</code") {
-                in_code = false;
+            MdEvent::Code(code) => {
+                has_formatting = true;
+                let escaped = format!("<code>{}</code>", escape_html_str(&code));
+                if in_cell {
+                    current_cell.push_str(&escaped);
+                } else {
+                    out.push_str(&escaped);
+                }
             }
-            assembled.push_str(val);
-        } else if in_code {
-            assembled.push_str(val);
-        } else {
-            assembled.push_str(&convert_markdown_segments(val));
+            MdEvent::Html(raw_html) | MdEvent::InlineHtml(raw_html) => {
+                has_formatting = true;
+                if in_cell {
+                    current_cell.push_str(&raw_html);
+                } else {
+                    out.push_str(&raw_html);
+                }
+            }
+            MdEvent::SoftBreak => out.push('\n'),
+            MdEvent::HardBreak => out.push_str("<br/>\n"),
+            MdEvent::Rule => {
+                has_formatting = true;
+                out.push_str("<hr/>\n\n");
+            }
+            MdEvent::TaskListMarker(checked) => {
+                has_formatting = true;
+                if checked {
+                    out.push_str("☑ ");
+                } else {
+                    out.push_str("☐ ");
+                }
+            }
+            _ => {}
         }
     }
 
-    let with_headings_and_tables = replace_headings_and_tables(&assembled);
-    let final_text = replace_blockquotes(&with_headings_and_tables);
-    (final_text, Some(TextFormat::Html))
+    let final_text = out.trim().to_string();
+    if has_formatting {
+        (final_text, Some(TextFormat::Html))
+    } else {
+        (input.to_string(), None)
+    }
+}
+
+fn split_message_chunks(text: &str, max_len: usize) -> Vec<String> {
+    if text.len() <= max_len {
+        return vec![text.to_string()];
+    }
+    let mut chunks = Vec::new();
+    let mut current = String::with_capacity(max_len);
+
+    for line in text.lines() {
+        if current.len() + line.len() + 1 > max_len && !current.is_empty() {
+            chunks.push(current);
+            current = String::with_capacity(max_len);
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
 }
 
 // -- Commands ----------------------------------------------------------------
@@ -535,7 +363,10 @@ fn echo(ctx: &CommandContext) -> anyhow::Result<()> {
         msg.and_then(|m| m.sender_id()),
         msg.map(|m| m.chat_id()),
     );
-    bot.emit_event(reply_formatted(ctx.event, reply_text, format));
+    let chunks = split_message_chunks(&reply_text, 4000);
+    for chunk in chunks {
+        bot.emit_event(reply_formatted(ctx.event, chunk, format));
+    }
     Ok(())
 }
 
