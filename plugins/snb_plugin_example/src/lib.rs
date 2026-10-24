@@ -237,7 +237,47 @@ fn replace_blockquotes(text: &str) -> String {
     lines.join("\n")
 }
 
-fn convert_inline_markdown(input: &str) -> String {
+fn is_valid_telegram_html_tag(tag: &str) -> bool {
+    let lower = tag.to_ascii_lowercase();
+    const VALID_EXACT: &[&str] = &[
+        "<b>", "</b>", "<strong>", "</strong>",
+        "<i>", "</i>", "<em>", "</em>",
+        "<u>", "</u>", "<ins>", "</ins>",
+        "<s>", "</s>", "<strike>", "</strike>", "<del>", "</del>",
+        "<code>", "</code>",
+        "<pre>", "</pre>",
+        "<blockquote>", "</blockquote>", "<blockquote expandable>",
+        "<tg-spoiler>", "</tg-spoiler>",
+        "</tg-emoji>", "</a>",
+    ];
+    if VALID_EXACT.contains(&lower.as_str()) {
+        return true;
+    }
+    if (lower.starts_with("<a href=") && lower.ends_with('>'))
+        || (lower.starts_with("<tg-emoji") && lower.ends_with('>'))
+        || (lower.starts_with("<pre") && lower.ends_with('>'))
+        || (lower.starts_with("<code") && lower.ends_with('>'))
+        || (lower.starts_with("<blockquote") && lower.ends_with('>'))
+    {
+        return true;
+    }
+    false
+}
+
+fn process_markdown_delimiters(text: &str) -> String {
+    let mut out = text.to_string();
+    out = replace_links(&out);
+    out = replace_delimited(&out, "||", "<tg-spoiler>", "</tg-spoiler>");
+    out = replace_delimited(&out, "**", "<b>", "</b>");
+    out = replace_delimited(&out, "__", "<u>", "</u>");
+    out = replace_delimited(&out, "~~", "<s>", "</s>");
+    out = replace_delimited(&out, "*", "<b>", "</b>");
+    out = replace_delimited(&out, "_", "<i>", "</i>");
+    out = replace_delimited(&out, "~", "<s>", "</s>");
+    out
+}
+
+fn convert_markdown_segments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let parts: Vec<&str> = input.split('`').collect();
 
@@ -245,66 +285,68 @@ fn convert_inline_markdown(input: &str) -> String {
         if i % 2 == 1 {
             out.push_str(&format!("<code>{}</code>", escape_html_str(part)));
         } else {
-            let mut segment = escape_html_str(part);
-            segment = replace_links(&segment);
-            segment = replace_delimited(&segment, "||", "<tg-spoiler>", "</tg-spoiler>");
-            segment = replace_delimited(&segment, "**", "<b>", "</b>");
-            segment = replace_delimited(&segment, "__", "<u>", "</u>");
-            segment = replace_delimited(&segment, "~~", "<s>", "</s>");
-            segment = replace_delimited(&segment, "*", "<b>", "</b>");
-            segment = replace_delimited(&segment, "_", "<i>", "</i>");
-            segment = replace_delimited(&segment, "~", "<s>", "</s>");
-            out.push_str(&segment);
+            out.push_str(&process_markdown_delimiters(part));
         }
     }
-    replace_blockquotes(&out)
+    out
 }
 
 /// Detect and convert rich text format (HTML or Markdown) to HTML.
 pub(crate) fn convert_rich_text(input: &str) -> (String, Option<TextFormat>) {
-    if is_html_markup(input) {
-        return (input.to_string(), Some(TextFormat::Html));
-    }
+    let has_html = is_html_markup(input);
+    let has_md = is_markdown_markup(input);
 
-    if !is_markdown_markup(input) {
+    if !has_html && !has_md {
         return (input.to_string(), None);
     }
 
-    let mut out = String::with_capacity(input.len() + 16);
-    let mut remaining = input;
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    let mut text_start = 0;
+    let bytes = input.as_bytes();
 
-    while let Some(start) = remaining.find("```") {
-        let before = &remaining[..start];
-        out.push_str(&convert_inline_markdown(before));
-
-        let after_fence = &remaining[start + 3..];
-        if let Some(end) = after_fence.find("```") {
-            let code_content = &after_fence[..end];
-            if let Some(newline) = code_content.find('\n') {
-                let lang = code_content[..newline].trim();
-                let code_body = &code_content[newline + 1..];
-                if !lang.is_empty() {
-                    out.push_str(&format!(
-                        "<pre><code class=\"language-{}\">{}</code></pre>",
-                        escape_attr_str(lang),
-                        escape_html_str(code_body)
-                    ));
-                } else {
-                    out.push_str(&format!("<pre>{}</pre>", escape_html_str(code_body)));
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            if let Some(close_pos) = input[i..].find('>') {
+                let candidate = &input[i..=i + close_pos];
+                if is_valid_telegram_html_tag(candidate) {
+                    if i > text_start {
+                        tokens.push((&input[text_start..i], false));
+                    }
+                    tokens.push((candidate, true));
+                    i += close_pos + 1;
+                    text_start = i;
+                    continue;
                 }
-            } else {
-                out.push_str(&format!("<pre>{}</pre>", escape_html_str(code_content)));
             }
-            remaining = &after_fence[end + 3..];
+        }
+        i += 1;
+    }
+    if text_start < input.len() {
+        tokens.push((&input[text_start..], false));
+    }
+
+    let mut assembled = String::with_capacity(input.len() + 32);
+    let mut in_code = false;
+
+    for (val, is_tag) in tokens {
+        if is_tag {
+            let lower = val.to_ascii_lowercase();
+            if lower.starts_with("<pre") || lower.starts_with("<code") {
+                in_code = true;
+            } else if lower.starts_with("</pre") || lower.starts_with("</code") {
+                in_code = false;
+            }
+            assembled.push_str(val);
+        } else if in_code {
+            assembled.push_str(val);
         } else {
-            out.push_str("```");
-            remaining = after_fence;
-            break;
+            assembled.push_str(&convert_markdown_segments(val));
         }
     }
 
-    out.push_str(&convert_inline_markdown(remaining));
-    (out, Some(TextFormat::Html))
+    let final_text = replace_blockquotes(&assembled);
+    (final_text, Some(TextFormat::Html))
 }
 
 // -- Commands ----------------------------------------------------------------
