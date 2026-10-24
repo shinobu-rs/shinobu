@@ -22,7 +22,7 @@ readme = "README.md"
 homepage = "https://github.com/shinobu-bfw/shinobu"
 repository = "https://github.com/shinobu-bfw/shinobu"
 edition = "2024"
-rust-version = "1.96.0"
+rust-version = "1.99.0"
 
 [workspace.metadata.snb]
 abi_version = "0.5.0"
