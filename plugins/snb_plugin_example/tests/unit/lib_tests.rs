@@ -125,9 +125,9 @@ kotlin {
     assert!(html.contains("<table><tr><th>Module</th><th>Description</th></tr>"));
     assert!(html.contains("<pre><code class=\"language-diff\">"));
     assert!(html.contains("implementation"));
-    assert!(html.contains("https://example.com/001.webp"));
-    assert!(html.contains("🖼️ 001"));
-    assert!(!html.contains("<img"));
+    assert!(html.contains("<tg-collage>"));
+    assert!(html.contains("<img src=\"https://example.com/001.webp\"/>"));
+    assert!(html.contains("</tg-collage>"));
 }
 
 #[test]

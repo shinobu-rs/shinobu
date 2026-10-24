@@ -304,29 +304,56 @@ fn sanitize_html_for_telegram(html: &str) -> String {
         return html.to_string();
     }
 
-    // Replace <img ... alt="ALT"/> inside tables with 🖼️ ALT so table cells contain only inline text links
-    let mut result = String::with_capacity(html.len());
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+
+    while let Some(start) = rest.find("<table") {
+        out.push_str(&rest[..start]);
+        let after_table = &rest[start..];
+        if let Some(end) = after_table.find("</table>") {
+            let table_block = &after_table[..end + 8];
+            if table_block.contains("<img") {
+                let images = extract_all_images(table_block);
+                if !images.is_empty() {
+                    out.push_str("<tg-collage>\n");
+                    for img in images {
+                        out.push_str(&format!("  <img src=\"{}\"/>\n", escape_attr_str(&img)));
+                    }
+                    out.push_str("</tg-collage>");
+                    rest = &after_table[end + 8..];
+                    continue;
+                }
+            }
+            out.push_str(table_block);
+            rest = &after_table[end + 8..];
+        } else {
+            out.push_str("<table");
+            rest = &after_table[6..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn extract_all_images(html: &str) -> Vec<String> {
+    let mut images = Vec::new();
     let mut rest = html;
 
     while let Some(start) = rest.find("<img") {
-        result.push_str(&rest[..start]);
         let after_img = &rest[start..];
         if let Some(end) = after_img.find('>') {
             let img_tag = &after_img[..=end];
-            let alt = extract_attribute(img_tag, "alt");
-            let label = match alt {
-                Some(a) if !a.is_empty() => format!("🖼️ {a}"),
-                _ => "🖼️ 查看图片".to_string(),
-            };
-            result.push_str(&label);
+            if let Some(src) = extract_attribute(img_tag, "src") {
+                if !src.is_empty() {
+                    images.push(src);
+                }
+            }
             rest = &after_img[end + 1..];
         } else {
-            result.push_str("<img");
             rest = &after_img[4..];
         }
     }
-    result.push_str(rest);
-    result
+    images
 }
 
 fn extract_attribute(tag: &str, attr: &str) -> Option<String> {
