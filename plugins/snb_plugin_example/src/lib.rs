@@ -258,6 +258,10 @@ fn replace_blockquotes(text: &str) -> String {
     lines.join("\n")
 }
 
+fn char_display_width(s: &str) -> usize {
+    s.chars().map(|c| if (c as u32) > 255 { 2 } else { 1 }).sum()
+}
+
 fn replace_headings_and_tables(text: &str) -> String {
     let mut out_lines = Vec::new();
     let mut table_lines: Vec<&str> = Vec::new();
@@ -267,10 +271,9 @@ fn replace_headings_and_tables(text: &str) -> String {
         if table_lines.is_empty() {
             return;
         }
-        let mut html = vec!["<table>".to_string()];
-        let mut header_done = false;
+        let mut rows: Vec<Vec<&str>> = Vec::new();
 
-        for (i, raw_line) in table_lines.iter().enumerate() {
+        for raw_line in table_lines.iter() {
             let line = raw_line.trim();
             if !line.contains('|') {
                 continue;
@@ -288,22 +291,57 @@ fn replace_headings_and_tables(text: &str) -> String {
                 !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' ')
             });
             if is_sep {
-                header_done = true;
                 continue;
             }
-
-            let tag = if !header_done && i == 0 { "th" } else { "td" };
-            let row = cells.iter().map(|c| format!("<{tag}>{c}</{tag}>")).collect::<String>();
-            html.push(format!("<tr>{row}</tr>"));
+            rows.push(cells);
         }
-        html.push("</table>".to_string());
-        out_lines.push(html.join(""));
+
+        if !rows.is_empty() {
+            let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+            let mut col_widths = vec![0usize; num_cols];
+
+            for r in &rows {
+                for (i, cell) in r.iter().enumerate() {
+                    let w = char_display_width(cell);
+                    if w > col_widths[i] {
+                        col_widths[i] = w;
+                    }
+                }
+            }
+
+            let mut out = Vec::new();
+            let sep_cols: Vec<String> = col_widths.iter().map(|w| "-".repeat(*w)).collect();
+            let sep = format!("+-{}-+", sep_cols.join("-+-"));
+            out.push(sep.clone());
+
+            for (r_idx, r) in rows.iter().enumerate() {
+                let mut row_str = String::from("| ");
+                for i in 0..num_cols {
+                    let cell = r.get(i).copied().unwrap_or("");
+                    let w = char_display_width(cell);
+                    let pad = col_widths[i].saturating_sub(w);
+                    row_str.push_str(cell);
+                    row_str.push_str(&" ".repeat(pad));
+                    if i == num_cols - 1 {
+                        row_str.push_str(" |");
+                    } else {
+                        row_str.push_str(" | ");
+                    }
+                }
+                out.push(row_str);
+                if r_idx == 0 && rows.len() > 1 {
+                    out.push(sep.clone());
+                }
+            }
+            out.push(sep);
+            out_lines.push(format!("<pre>{}</pre>", out.join("\n")));
+        }
         table_lines.clear();
     };
 
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with('|') && (trimmed.ends_with('|') || trimmed.contains('|')) {
+        if trimmed.starts_with('|') && trimmed.contains('|') {
             in_table = true;
             table_lines.push(line);
             continue;
@@ -312,7 +350,7 @@ fn replace_headings_and_tables(text: &str) -> String {
             in_table = false;
         }
 
-        // Check headings # ... ######
+        // Check headings # ... ###### (produce native <h1> to <h6>)
         let mut heading_handled = false;
         for level in (1..=6).rev() {
             let prefix = "#".repeat(level) + " ";
@@ -334,6 +372,7 @@ fn replace_headings_and_tables(text: &str) -> String {
 
     out_lines.join("\n")
 }
+
 
 fn is_valid_telegram_html_tag(tag: &str) -> bool {
     let lower = tag.to_ascii_lowercase();
@@ -576,6 +615,75 @@ fn echo_arg_rewrite(event: &mut Event) -> anyhow::Result<()> {
     {
         cmd.args = "rewritten by hook".to_string();
     }
+    Ok(())
+}
+
+/// Handle Telegram inline queries to output formatted rich text on demand.
+#[hook(name = "inline_rich_text", kind = HookType::All)]
+fn inline_rich_text(event: &mut Event) -> anyhow::Result<()> {
+    if let snb_core::event::EventType::Other(kind) = &event.event_type {
+        if kind == "InlineQuery" {
+            handle_inline_query(event)?;
+        }
+    }
+    Ok(())
+}
+
+fn handle_inline_query(event: &Event) -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    struct QueryUpdate {
+        inline_query: Option<QueryData>,
+    }
+    #[derive(serde::Deserialize)]
+    struct QueryData {
+        id: String,
+        query: String,
+    }
+
+    let Ok(update) = serde_json::from_str::<QueryUpdate>(&event.data) else {
+        return Ok(());
+    };
+    let Some(query) = update.inline_query else {
+        return Ok(());
+    };
+
+    let q = query.query.trim();
+    let (formatted_html, _) = if q.is_empty() {
+        (
+            "<i>输入 Markdown 或 HTML 格式文本进行实时富文本排版...</i>".to_string(),
+            Some(TextFormat::Html),
+        )
+    } else {
+        convert_rich_text(q)
+    };
+
+    let result_article = serde_json::json!({
+        "type": "article",
+        "id": "rich_1",
+        "title": "💎 发送富文本",
+        "description": if q.is_empty() { "输入文本即可即时转译富文本并发送" } else { q },
+        "input_message_content": {
+            "rich_message": {
+                "html": formatted_html
+            }
+        }
+    });
+
+    let answer_params = serde_json::json!({
+        "inline_query_id": query.id,
+        "results": [result_article],
+        "is_personal": true,
+        "cache_time": 0
+    });
+
+    let mut action_event = Event::typed(
+        snb_core::event::EventType::Other("tg:answer_inline_query".to_string()),
+        "MyPlugin",
+        "",
+    );
+    action_event.target_plugin = Some("TGAdapter".to_string());
+    action_event.data = serde_json::to_string(&answer_params)?;
+    snb_core::context::bot().emit_event(action_event);
     Ok(())
 }
 
