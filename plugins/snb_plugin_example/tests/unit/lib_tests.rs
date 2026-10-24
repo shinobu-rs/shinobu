@@ -131,6 +131,18 @@ kotlin {
 }
 
 #[test]
+fn converts_standalone_html_image_table() {
+    let table = r#"<table> <tr> <td><a href="https://github.com/compose-miuix-ui/miuix/blob/main/assets/001.webp?raw=true"><img src="https://github.com/compose-miuix-ui/miuix/blob/main/assets/001.webp?raw=true" width="300" alt="Screenshot 001"/></a></td> <td><a href="https://github.com/compose-miuix-ui/miuix/blob/main/assets/002.webp?raw=true"><img src="https://github.com/compose-miuix-ui/miuix/blob/main/assets/002.webp?raw=true" width="300" alt="Screenshot 002"/></a></td> </tr> </table>"#;
+    let (html, fmt) = convert_rich_text(table);
+    println!("DEBUG HTML: {}", html);
+    println!("DEBUG FMT: {:?}", fmt);
+    assert_eq!(fmt, Some(TextFormat::Html));
+    assert!(html.contains("<tg-collage>"));
+    assert!(html.contains("<img src=\"https://github.com/compose-miuix-ui/miuix/blob/main/assets/001.webp?raw=true\"/>"));
+    assert!(html.contains("</tg-collage>"));
+}
+
+#[test]
 fn plain_text_returns_none() {
     assert_eq!(
         convert_rich_text("just plain text"),

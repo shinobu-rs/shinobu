@@ -527,12 +527,27 @@ fn echo_handler(event: &Event) -> anyhow::Result<()> {
                 .last()
                 .is_some_and(|m| m.role == "system" && m.content == "echo")
             {
-                // Echo the user's message preserving rich text format and attachments.
+                // Echo the user's message with rich text conversion and preserving attachments.
+                let mut new_content = Vec::new();
+                for item in &msg.content {
+                    match item {
+                        ContentItem::Text { text, format } => {
+                            let (converted_text, detected_fmt) = convert_rich_text(text);
+                            let final_fmt = detected_fmt.or(*format);
+                            new_content.push(if let Some(fmt) = final_fmt {
+                                ContentItem::formatted_text(converted_text, fmt)
+                            } else {
+                                ContentItem::text(converted_text)
+                            });
+                        }
+                        other => new_content.push(other.clone()),
+                    }
+                }
                 let mut resp = Event::message("MyPlugin", "");
                 let out = resp.message.as_mut().unwrap();
                 out.chat = msg.chat.clone();
                 out.reply_to = msg.id.clone();
-                out.content = msg.content.clone();
+                out.content = new_content;
                 if let Some(plugin) = &event.reply_plugin {
                     resp.target_plugin = Some(plugin.clone());
                 }
