@@ -10,14 +10,18 @@ use std::time::Duration;
 
 use snb_core::command::CommandContext;
 use snb_core::context::BotContext;
-use snb_core::event::Event;
+use snb_core::event::{ContentItem, Event, TextFormat};
 use snb_core::hook::HookType;
 use snb_core::session::{SessionKey, SessionMessage, SessionState};
 use snb_macros::{adapter, command, hook, message_handler, plugin};
 
-/// Build a reply event addressed back to `src`'s sender, mirroring its chat/reply_to.
-fn reply(src: &Event, text: impl Into<String>) -> Event {
-    let mut resp = Event::message("MyPlugin", text);
+/// Build a reply event addressed back to `src`'s sender with optional text format.
+fn reply_formatted(src: &Event, text: impl Into<String>, format: Option<TextFormat>) -> Event {
+    let text = text.into();
+    let mut resp = match format {
+        Some(fmt) => Event::formatted_message("MyPlugin", text, fmt),
+        None => Event::message("MyPlugin", text),
+    };
     if let Some(m) = &src.message {
         let out = resp.message.as_mut().unwrap();
         out.chat = m.chat.clone();
@@ -27,6 +31,62 @@ fn reply(src: &Event, text: impl Into<String>) -> Event {
         resp.target_plugin = Some(plugin.clone());
     }
     resp
+}
+
+/// Build a plain text reply event addressed back to `src`'s sender.
+fn reply(src: &Event, text: impl Into<String>) -> Event {
+    reply_formatted(src, text, None)
+}
+
+fn is_html_markup(text: &str) -> bool {
+    const HTML_TAGS: &[&str] = &[
+        "<b>", "</b>", "<strong>", "</strong>",
+        "<i>", "</i>", "<em>", "</em>",
+        "<u>", "</u>", "<ins>", "</ins>",
+        "<s>", "</s>", "<strike>", "</strike>", "<del>", "</del>",
+        "<code>", "</code>",
+        "<pre>", "</pre>",
+        "<blockquote>", "</blockquote>",
+        "<tg-spoiler>", "</tg-spoiler>",
+        "<tg-emoji", "</tg-emoji>",
+        "<a href=", "</a>",
+    ];
+    HTML_TAGS.iter().any(|tag| text.contains(tag))
+}
+
+fn is_markdown_markup(text: &str) -> bool {
+    if text.contains("```") || (text.contains('`') && text.chars().filter(|&c| c == '`').count() >= 2) {
+        return true;
+    }
+    if text.contains("||") && text.matches("||").count() >= 2 {
+        return true;
+    }
+    if text.lines().any(|l| l.trim_start().starts_with('>') || l.trim_start().starts_with("**>")) {
+        return true;
+    }
+    if let (Some(bracket), Some(paren)) = (text.find('['), text.find("](")) {
+        if paren > bracket && text[paren..].contains(')') {
+            return true;
+        }
+    }
+    for delimiter in ['*', '_', '~'] {
+        let count = text.chars().filter(|&c| c == delimiter).count();
+        if count >= 2 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Detect rich text format: HTML first, then MarkdownV2, or None.
+pub(crate) fn detect_rich_text_format(text: &str) -> Option<TextFormat> {
+    if is_html_markup(text) {
+        Some(TextFormat::Html)
+    } else if is_markdown_markup(text) {
+        Some(TextFormat::MarkdownV2)
+    } else {
+        None
+    }
 }
 
 // -- Commands ----------------------------------------------------------------
@@ -51,15 +111,25 @@ fn echo(ctx: &CommandContext) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Has args → echo directly.
+    // Has args → detect rich text format and echo.
+    let format = detect_rich_text_format(ctx.args).or_else(|| {
+        msg.and_then(|m| {
+            m.content.iter().find_map(|c| match c {
+                ContentItem::Text { format, .. } => *format,
+                _ => None,
+            })
+        })
+    });
+
     log::info!(
-        "[command] /echo args={:?} source={} sender={:?} chat={:?}",
+        "[command] /echo args={:?} format={:?} source={} sender={:?} chat={:?}",
         ctx.args,
+        format,
         ctx.event.source,
         msg.and_then(|m| m.sender_id()),
         msg.map(|m| m.chat_id()),
     );
-    bot.emit_event(reply(ctx.event, ctx.args));
+    bot.emit_event(reply_formatted(ctx.event, ctx.args, format));
     Ok(())
 }
 
@@ -89,8 +159,16 @@ fn echo_handler(event: &Event) -> anyhow::Result<()> {
                 .last()
                 .is_some_and(|m| m.role == "system" && m.content == "echo")
             {
-                // Echo the user's message and exit session mode.
-                snb_core::context::bot().emit_event(reply(event, &text));
+                // Echo the user's message preserving rich text format and attachments.
+                let mut resp = Event::message("MyPlugin", "");
+                let out = resp.message.as_mut().unwrap();
+                out.chat = msg.chat.clone();
+                out.reply_to = msg.id.clone();
+                out.content = msg.content.clone();
+                if let Some(plugin) = &event.reply_plugin {
+                    resp.target_plugin = Some(plugin.clone());
+                }
+                snb_core::context::bot().emit_event(resp);
                 sm.clear_session(&key);
                 return Ok(());
             }
