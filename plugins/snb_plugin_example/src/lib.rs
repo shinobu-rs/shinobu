@@ -50,6 +50,11 @@ fn is_html_markup(text: &str) -> bool {
         "<tg-spoiler>", "</tg-spoiler>",
         "<tg-emoji", "</tg-emoji>",
         "<a href=", "</a>",
+        "<h1>", "</h1>", "<h2>", "</h2>", "<h3>", "</h3>",
+        "<h4>", "</h4>", "<h5>", "</h5>", "<h6>", "</h6>",
+        "<table>", "</table>", "<tr>", "</tr>", "<td>", "</td>", "<th>", "</th>",
+        "<details", "</details>", "<summary>", "</summary>",
+        "<tg-math>", "</tg-math>", "<tg-math-block>", "</tg-math-block>",
     ];
     HTML_TAGS.iter().any(|tag| text.contains(tag))
 }
@@ -61,7 +66,23 @@ fn is_markdown_markup(text: &str) -> bool {
     if text.contains("||") && text.matches("||").count() >= 2 {
         return true;
     }
-    if text.lines().any(|l| l.trim_start().starts_with('>') || l.trim_start().starts_with("**>")) {
+    if text.contains("$$") {
+        return true;
+    }
+    if text.contains('|') && (text.contains("|-") || text.contains("-|") || text.contains("|:")) {
+        return true;
+    }
+    if text.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with('>')
+            || t.starts_with("**>")
+            || t.starts_with("# ")
+            || t.starts_with("## ")
+            || t.starts_with("### ")
+            || t.starts_with("#### ")
+            || t.starts_with("##### ")
+            || t.starts_with("###### ")
+    }) {
         return true;
     }
     if let (Some(bracket), Some(paren)) = (text.find('['), text.find("](")) {
@@ -237,6 +258,83 @@ fn replace_blockquotes(text: &str) -> String {
     lines.join("\n")
 }
 
+fn replace_headings_and_tables(text: &str) -> String {
+    let mut out_lines = Vec::new();
+    let mut table_lines: Vec<&str> = Vec::new();
+    let mut in_table = false;
+
+    let flush_table = |out_lines: &mut Vec<String>, table_lines: &mut Vec<&str>| {
+        if table_lines.is_empty() {
+            return;
+        }
+        let mut html = vec!["<table>".to_string()];
+        let mut header_done = false;
+
+        for (i, raw_line) in table_lines.iter().enumerate() {
+            let line = raw_line.trim();
+            if !line.contains('|') {
+                continue;
+            }
+            let mut content = line;
+            if content.starts_with('|') {
+                content = &content[1..];
+            }
+            if content.ends_with('|') {
+                content = &content[..content.len() - 1];
+            }
+            let cells: Vec<&str> = content.split('|').map(str::trim).collect();
+
+            let is_sep = cells.iter().all(|c| {
+                !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' ')
+            });
+            if is_sep {
+                header_done = true;
+                continue;
+            }
+
+            let tag = if !header_done && i == 0 { "th" } else { "td" };
+            let row = cells.iter().map(|c| format!("<{tag}>{c}</{tag}>")).collect::<String>();
+            html.push(format!("<tr>{row}</tr>"));
+        }
+        html.push("</table>".to_string());
+        out_lines.push(html.join(""));
+        table_lines.clear();
+    };
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('|') && (trimmed.ends_with('|') || trimmed.contains('|')) {
+            in_table = true;
+            table_lines.push(line);
+            continue;
+        } else if in_table {
+            flush_table(&mut out_lines, &mut table_lines);
+            in_table = false;
+        }
+
+        // Check headings # ... ######
+        let mut heading_handled = false;
+        for level in (1..=6).rev() {
+            let prefix = "#".repeat(level) + " ";
+            if let Some(title) = trimmed.strip_prefix(&prefix) {
+                out_lines.push(format!("<h{level}>{}</h{level}>", title.trim()));
+                heading_handled = true;
+                break;
+            }
+        }
+
+        if !heading_handled {
+            out_lines.push(line.to_string());
+        }
+    }
+
+    if in_table {
+        flush_table(&mut out_lines, &mut table_lines);
+    }
+
+    out_lines.join("\n")
+}
+
 fn is_valid_telegram_html_tag(tag: &str) -> bool {
     let lower = tag.to_ascii_lowercase();
     const VALID_EXACT: &[&str] = &[
@@ -249,6 +347,12 @@ fn is_valid_telegram_html_tag(tag: &str) -> bool {
         "<blockquote>", "</blockquote>", "<blockquote expandable>",
         "<tg-spoiler>", "</tg-spoiler>",
         "</tg-emoji>", "</a>",
+        "<h1>", "</h1>", "<h2>", "</h2>", "<h3>", "</h3>",
+        "<h4>", "</h4>", "<h5>", "</h5>", "<h6>", "</h6>",
+        "<table>", "</table>", "<tr>", "</tr>", "<td>", "</td>", "<th>", "</th>",
+        "<details>", "</details>", "<details open>",
+        "<summary>", "</summary>",
+        "<tg-math>", "</tg-math>", "<tg-math-block>", "</tg-math-block>",
     ];
     if VALID_EXACT.contains(&lower.as_str()) {
         return true;
@@ -258,12 +362,13 @@ fn is_valid_telegram_html_tag(tag: &str) -> bool {
         || (lower.starts_with("<pre") && lower.ends_with('>'))
         || (lower.starts_with("<code") && lower.ends_with('>'))
         || (lower.starts_with("<blockquote") && lower.ends_with('>'))
+        || (lower.starts_with("<table") && lower.ends_with('>'))
+        || (lower.starts_with("<details") && lower.ends_with('>'))
     {
         return true;
     }
     false
 }
-
 fn process_markdown_delimiters(text: &str) -> String {
     let mut out = text.to_string();
     out = replace_links(&out);
@@ -345,7 +450,8 @@ pub(crate) fn convert_rich_text(input: &str) -> (String, Option<TextFormat>) {
         }
     }
 
-    let final_text = replace_blockquotes(&assembled);
+    let with_headings_and_tables = replace_headings_and_tables(&assembled);
+    let final_text = replace_blockquotes(&with_headings_and_tables);
     (final_text, Some(TextFormat::Html))
 }
 

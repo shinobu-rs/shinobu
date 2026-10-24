@@ -88,6 +88,17 @@ fn converts_markdown_syntax_to_html() {
             Some(TextFormat::Html)
         )
     );
+    assert_eq!(
+        convert_rich_text("### 标题测试"),
+        ("<h3>标题测试</h3>".to_string(), Some(TextFormat::Html))
+    );
+    assert_eq!(
+        convert_rich_text("| 标题1 | 标题2 |\n|---|---|\n| A | B |"),
+        (
+            "<table><tr><th>标题1</th><th>标题2</th></tr><tr><td>A</td><td>B</td></tr></table>".to_string(),
+            Some(TextFormat::Html)
+        )
+    );
 }
 
 #[test]
