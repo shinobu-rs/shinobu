@@ -299,27 +299,81 @@ pub(crate) fn convert_rich_text(input: &str) -> (String, Option<TextFormat>) {
     }
 }
 
-fn split_message_chunks(text: &str, max_len: usize) -> Vec<String> {
+fn has_rich_features(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("<table")
+        || lower.contains("<h1")
+        || lower.contains("<h2")
+        || lower.contains("<h3")
+        || lower.contains("<h4")
+        || lower.contains("<h5")
+        || lower.contains("<h6")
+        || lower.contains("<details")
+        || lower.contains("<tg-math")
+        || lower.contains("<tg-button")
+        || text.lines().any(|l| {
+            let t = l.trim_start();
+            t.starts_with("# ")
+                || t.starts_with("## ")
+                || t.starts_with("### ")
+                || t.starts_with("#### ")
+                || t.starts_with("##### ")
+                || t.starts_with("###### ")
+        })
+        || (text.contains('|') && (text.contains("|-") || text.contains("-|") || text.contains("|:")))
+}
+
+fn split_markdown_into_chunks(text: &str, max_len: usize) -> Vec<String> {
     if text.len() <= max_len {
         return vec![text.to_string()];
     }
+
     let mut chunks = Vec::new();
     let mut current = String::with_capacity(max_len);
 
-    for line in text.lines() {
-        if current.len() + line.len() + 1 > max_len && !current.is_empty() {
-            chunks.push(current);
+    // Split at paragraph/block boundaries (double newline)
+    let blocks = text.split("\n\n");
+
+    for block in blocks {
+        let block_len = block.len();
+        if current.len() + block_len + 2 > max_len && !current.is_empty() {
+            chunks.push(current.trim().to_string());
             current = String::with_capacity(max_len);
         }
-        if !current.is_empty() {
-            current.push('\n');
+
+        if block_len > max_len {
+            if !current.is_empty() {
+                chunks.push(current.trim().to_string());
+                current = String::with_capacity(max_len);
+            }
+            for line in block.lines() {
+                if current.len() + line.len() + 1 > max_len && !current.is_empty() {
+                    chunks.push(current.trim().to_string());
+                    current = String::with_capacity(max_len);
+                }
+                if !current.is_empty() {
+                    current.push('\n');
+                }
+                current.push_str(line);
+            }
+            continue;
         }
-        current.push_str(line);
+
+        if !current.is_empty() {
+            current.push_str("\n\n");
+        }
+        current.push_str(block);
     }
-    if !current.is_empty() {
-        chunks.push(current);
+
+    if !current.trim().is_empty() {
+        chunks.push(current.trim().to_string());
     }
-    chunks
+
+    if chunks.is_empty() {
+        vec![text.to_string()]
+    } else {
+        chunks
+    }
 }
 
 // -- Commands ----------------------------------------------------------------
@@ -345,27 +399,33 @@ fn echo(ctx: &CommandContext) -> anyhow::Result<()> {
     }
 
     // Has args → convert rich text (markdown/HTML) and echo.
-    let (reply_text, format) = convert_rich_text(ctx.args);
-    let format = format.or_else(|| {
-        msg.and_then(|m| {
-            m.content.iter().find_map(|c| match c {
-                ContentItem::Text { format, .. } => *format,
-                _ => None,
-            })
-        })
-    });
+    let max_len = if has_rich_features(ctx.args) {
+        30000 // Telegram sendRichMessage limit is 32768
+    } else {
+        4000  // Telegram standard sendMessage limit is 4096
+    };
 
-    log::info!(
-        "[command] /echo args={:?} format={:?} source={} sender={:?} chat={:?}",
-        ctx.args,
-        format,
-        ctx.event.source,
-        msg.and_then(|m| m.sender_id()),
-        msg.map(|m| m.chat_id()),
-    );
-    let chunks = split_message_chunks(&reply_text, 4000);
-    for chunk in chunks {
-        bot.emit_event(reply_formatted(ctx.event, chunk, format));
+    let md_chunks = split_markdown_into_chunks(ctx.args, max_len);
+    for chunk in md_chunks {
+        let (reply_text, format) = convert_rich_text(&chunk);
+        let format = format.or_else(|| {
+            msg.and_then(|m| {
+                m.content.iter().find_map(|c| match c {
+                    ContentItem::Text { format, .. } => *format,
+                    _ => None,
+                })
+            })
+        });
+
+        log::info!(
+            "[command] /echo chunk_len={} format={:?} source={} sender={:?} chat={:?}",
+            reply_text.len(),
+            format,
+            ctx.event.source,
+            msg.and_then(|m| m.sender_id()),
+            msg.map(|m| m.chat_id()),
+        );
+        bot.emit_event(reply_formatted(ctx.event, reply_text, format));
     }
     Ok(())
 }
