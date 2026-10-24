@@ -291,11 +291,55 @@ pub(crate) fn convert_rich_text(input: &str) -> (String, Option<TextFormat>) {
         }
     }
 
-    let final_text = out.trim().to_string();
+    let final_text = sanitize_html_for_telegram(out.trim());
     if has_formatting {
         (final_text, Some(TextFormat::Html))
     } else {
         (input.to_string(), None)
+    }
+}
+
+fn sanitize_html_for_telegram(html: &str) -> String {
+    if !html.contains("<table") {
+        return html.to_string();
+    }
+
+    // Replace <img ... alt="ALT"/> inside tables with 🖼️ ALT so table cells contain only inline text links
+    let mut result = String::with_capacity(html.len());
+    let mut rest = html;
+
+    while let Some(start) = rest.find("<img") {
+        result.push_str(&rest[..start]);
+        let after_img = &rest[start..];
+        if let Some(end) = after_img.find('>') {
+            let img_tag = &after_img[..=end];
+            let alt = extract_attribute(img_tag, "alt");
+            let label = match alt {
+                Some(a) if !a.is_empty() => format!("🖼️ {a}"),
+                _ => "🖼️ 查看图片".to_string(),
+            };
+            result.push_str(&label);
+            rest = &after_img[end + 1..];
+        } else {
+            result.push_str("<img");
+            rest = &after_img[4..];
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
+fn extract_attribute(tag: &str, attr: &str) -> Option<String> {
+    let key = format!("{attr}=");
+    let pos = tag.find(&key)?;
+    let after_key = &tag[pos + key.len()..];
+    let quote = after_key.chars().next()?;
+    if quote == '"' || quote == '\'' {
+        let val_start = 1;
+        let val_end = after_key[val_start..].find(quote)?;
+        Some(after_key[val_start..val_start + val_end].to_string())
+    } else {
+        None
     }
 }
 

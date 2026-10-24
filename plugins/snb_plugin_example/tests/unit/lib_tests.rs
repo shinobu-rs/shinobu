@@ -126,6 +126,8 @@ kotlin {
     assert!(html.contains("<pre><code class=\"language-diff\">"));
     assert!(html.contains("implementation"));
     assert!(html.contains("https://example.com/001.webp"));
+    assert!(html.contains("🖼️ 001"));
+    assert!(!html.contains("<img"));
 }
 
 #[test]
