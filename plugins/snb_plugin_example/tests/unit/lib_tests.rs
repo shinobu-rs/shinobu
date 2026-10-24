@@ -59,6 +59,21 @@ fn converts_markdown_syntax_to_html() {
         convert_rich_text("> quote line"),
         ("<blockquote>quote line</blockquote>".to_string(), Some(TextFormat::Html))
     );
+    assert_eq!(
+        convert_rich_text("*粗体* _斜体_ ~删除线~ ||剧透|| `等宽代码` > 引用文本"),
+        (
+            "<b>粗体</b> <i>斜体</i> <s>删除线</s> <tg-spoiler>剧透</tg-spoiler> <code>等宽代码</code>\n<blockquote>引用文本</blockquote>".to_string(),
+            Some(TextFormat::Html)
+        )
+    );
+    assert_eq!(
+        convert_rich_text("> line 1\n> line 2"),
+        ("<blockquote>line 1\nline 2</blockquote>".to_string(), Some(TextFormat::Html))
+    );
+    assert_eq!(
+        convert_rich_text("**> expandable quote"),
+        ("<blockquote expandable>expandable quote</blockquote>".to_string(), Some(TextFormat::Html))
+    );
 }
 
 #[test]

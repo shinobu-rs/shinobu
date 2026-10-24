@@ -167,27 +167,73 @@ fn replace_links(text: &str) -> String {
 fn replace_blockquotes(text: &str) -> String {
     let mut lines = Vec::new();
     let mut in_quote = false;
+    let mut is_expandable = false;
     let mut quote_lines = Vec::new();
 
-    for line in text.lines() {
-        if let Some(stripped) = line.strip_prefix("&gt; ").or_else(|| line.strip_prefix("> ")) {
-            in_quote = true;
-            quote_lines.push(stripped);
-        } else if line == "&gt;" || line == ">" {
-            in_quote = true;
-            quote_lines.push("");
-        } else {
-            if in_quote {
-                lines.push(format!("<blockquote>{}</blockquote>", quote_lines.join("\n")));
-                quote_lines.clear();
-                in_quote = false;
-            }
-            lines.push(line.to_string());
+    let flush_quote = |lines: &mut Vec<String>, quote_lines: &mut Vec<String>, expandable: bool| {
+        if quote_lines.is_empty() {
+            return;
         }
+        let open_tag = if expandable { "<blockquote expandable>" } else { "<blockquote>" };
+        lines.push(format!("{open_tag}{}</blockquote>", quote_lines.join("\n")));
+        quote_lines.clear();
+    };
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let (stripped, expandable) = if let Some(s) = trimmed.strip_prefix("**&gt; ").or_else(|| trimmed.strip_prefix("**> ")) {
+            (Some(s), true)
+        } else if let Some(s) = trimmed.strip_prefix("&gt; ").or_else(|| trimmed.strip_prefix("> ")) {
+            (Some(s), false)
+        } else if let Some(s) = trimmed.strip_prefix("&gt;").or_else(|| trimmed.strip_prefix(">")) {
+            (Some(s), false)
+        } else if let Some(s) = trimmed.strip_prefix("＞ ").or_else(|| trimmed.strip_prefix("＞")).or_else(|| trimmed.strip_prefix("》 ")) {
+            (Some(s), false)
+        } else {
+            (None, false)
+        };
+
+        if let Some(s) = stripped {
+            if in_quote && is_expandable != expandable {
+                flush_quote(&mut lines, &mut quote_lines, is_expandable);
+            }
+            in_quote = true;
+            is_expandable = expandable;
+            quote_lines.push(s.to_string());
+            continue;
+        }
+
+        // Check if there is an inline quote marker mid-line: " &gt; ", " > ", " **&gt; ", " **> "
+        let (inline_pos, gt_len, inline_expandable) = if let Some(pos) = line.find(" **&gt; ").or_else(|| line.find(" **> ")) {
+            let len = if line[pos..].starts_with(" **&gt; ") { 8 } else { 5 };
+            (Some(pos), len, true)
+        } else if let Some(pos) = line.find(" &gt; ").or_else(|| line.find(" > ")) {
+            let len = if line[pos..].starts_with(" &gt; ") { 6 } else { 3 };
+            (Some(pos), len, false)
+        } else if let Some(pos) = line.find(" ＞ ").or_else(|| line.find(" ＞")).or_else(|| line.find(" 》 ")) {
+            let len = if line[pos..].starts_with(" ＞ ") || line[pos..].starts_with(" 》 ") { 4 } else { 3 };
+            (Some(pos), len, false)
+        } else {
+            (None, 0, false)
+        };
+
+        if let Some(pos) = inline_pos {
+            flush_quote(&mut lines, &mut quote_lines, is_expandable);
+            in_quote = false;
+
+            let before = &line[..pos];
+            let quote_part = &line[pos + gt_len..];
+            let open_tag = if inline_expandable { "<blockquote expandable>" } else { "<blockquote>" };
+            lines.push(format!("{before}\n{open_tag}{quote_part}</blockquote>"));
+            continue;
+        }
+
+        flush_quote(&mut lines, &mut quote_lines, is_expandable);
+        in_quote = false;
+        lines.push(line.to_string());
     }
-    if in_quote {
-        lines.push(format!("<blockquote>{}</blockquote>", quote_lines.join("\n")));
-    }
+
+    flush_quote(&mut lines, &mut quote_lines, is_expandable);
     lines.join("\n")
 }
 
