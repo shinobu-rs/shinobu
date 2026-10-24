@@ -22,26 +22,53 @@ fn test_plugin_ffi() {
 }
 
 #[test]
-fn detects_html_rich_text() {
-    assert_eq!(detect_rich_text_format("hello <b>world</b>"), Some(TextFormat::Html));
-    assert_eq!(detect_rich_text_format("<code>1 + 1</code>"), Some(TextFormat::Html));
-    assert_eq!(detect_rich_text_format("<blockquote>a quote</blockquote>"), Some(TextFormat::Html));
-    assert_eq!(detect_rich_text_format("<tg-spoiler>hidden</tg-spoiler>"), Some(TextFormat::Html));
-    assert_eq!(detect_rich_text_format("<a href=\"https://t.me\">link</a>"), Some(TextFormat::Html));
+fn preserves_raw_html_rich_text() {
+    assert_eq!(
+        convert_rich_text("hello <b>world</b>"),
+        ("hello <b>world</b>".to_string(), Some(TextFormat::Html))
+    );
+    assert_eq!(
+        convert_rich_text("<code>1 + 1</code>"),
+        ("<code>1 + 1</code>".to_string(), Some(TextFormat::Html))
+    );
 }
 
 #[test]
-fn detects_markdown_rich_text() {
-    assert_eq!(detect_rich_text_format("hello *world*"), Some(TextFormat::MarkdownV2));
-    assert_eq!(detect_rich_text_format("`code block`"), Some(TextFormat::MarkdownV2));
-    assert_eq!(detect_rich_text_format("```rust\nfn main() {}\n```"), Some(TextFormat::MarkdownV2));
-    assert_eq!(detect_rich_text_format("||spoiler||"), Some(TextFormat::MarkdownV2));
-    assert_eq!(detect_rich_text_format("> a quote line"), Some(TextFormat::MarkdownV2));
-    assert_eq!(detect_rich_text_format("[Telegram](https://telegram.org)"), Some(TextFormat::MarkdownV2));
+fn converts_markdown_syntax_to_html() {
+    assert_eq!(
+        convert_rich_text("hello *world*!"),
+        ("hello <b>world</b>!".to_string(), Some(TextFormat::Html))
+    );
+    assert_eq!(
+        convert_rich_text("hello **world**!"),
+        ("hello <b>world</b>!".to_string(), Some(TextFormat::Html))
+    );
+    assert_eq!(
+        convert_rich_text("`code block`"),
+        ("<code>code block</code>".to_string(), Some(TextFormat::Html))
+    );
+    assert_eq!(
+        convert_rich_text("||spoiler||"),
+        ("<tg-spoiler>spoiler</tg-spoiler>".to_string(), Some(TextFormat::Html))
+    );
+    assert_eq!(
+        convert_rich_text("[Telegram](https://telegram.org)"),
+        ("<a href=\"https://telegram.org\">Telegram</a>".to_string(), Some(TextFormat::Html))
+    );
+    assert_eq!(
+        convert_rich_text("> quote line"),
+        ("<blockquote>quote line</blockquote>".to_string(), Some(TextFormat::Html))
+    );
 }
 
 #[test]
 fn plain_text_returns_none() {
-    assert_eq!(detect_rich_text_format("just plain text"), None);
-    assert_eq!(detect_rich_text_format("numbers 123 and symbols !?"), None);
+    assert_eq!(
+        convert_rich_text("just plain text"),
+        ("just plain text".to_string(), None)
+    );
+    assert_eq!(
+        convert_rich_text("numbers 123 and symbols !?"),
+        ("numbers 123 and symbols !?".to_string(), None)
+    );
 }
